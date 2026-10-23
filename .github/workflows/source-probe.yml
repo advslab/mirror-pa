@@ -1,0 +1,42 @@
+name: source probe
+
+# Manual only. Checks from a runner whether the advisory site answers and
+# how fast: listing page 1, then the record and the CSAF document of its
+# first 4 advisories; reports latency, every non-200 answer and every 200
+# that is not what was asked for (a CSAF answering 404 is counted apart).
+# Stores nothing.
+# Set the repository secret SOURCE_BASE to the site's base URL with its
+# trailing slash (Settings → Secrets and variables → Actions → Secrets); it is
+# masked in every log.
+on:
+  workflow_dispatch:
+    inputs:
+      pace:
+        description: "seconds between requests"
+        required: false
+        default: "1"
+      more:
+        description: "advisories whose record and CSAF are fetched (default 4)"
+        required: false
+        default: ""
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: refuse without the source secret
+        env:
+          BASE: ${{ secrets.SOURCE_BASE }}
+        run: |
+          if [ -z "$BASE" ]; then echo "::error::repository secret SOURCE_BASE is not set"; exit 1; fi
+      - name: probe
+        env:
+          BASE: ${{ secrets.SOURCE_BASE }}
+          PACE: ${{ inputs.pace }}
+          MORE: ${{ inputs.more }}
+        run: |
+          chmod +x bin/source-probe
+          sha256sum bin/source-probe
+          bin/source-probe

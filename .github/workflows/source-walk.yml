@@ -1,0 +1,99 @@
+name: source walk
+
+# Keeps one rolling release (tag `data`) of the vendor's security advisories:
+# advisories-YYYY.ndjson.gz per publish year, one line per advisory with its
+# listing row, its JSON 5 record and its CSAF document (null when none
+# answers), indexed by state.json. Every 4 hours a feed pass reads the
+# listing from page 1 until three pages in a row hold only known, unchanged
+# rows, and fetches the documents of the rows new or updated; once a day
+# (and on the first run, or with `full` true) every page is read and every
+# advisory fetched again. A run cools down when the source fails the same
+# way 8 calls in a row, stops at its time budget, and publishes the years
+# whose content changed.
+#
+# Chaining: when a run ends with work left (its budget, or an error other
+# than a stall) and `chain` is above 0, it dispatches one follow-up run with
+# chain - 1. The concurrency group keeps runs one at a time.
+#
+# Set the repository secret SOURCE_BASE to the site's base URL with its
+# trailing slash (Settings → Secrets and variables → Actions → Secrets); it is
+# masked in every log.
+on:
+  schedule:
+    - cron: "20 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: "how many follow-up runs may still follow this one"
+        required: false
+        default: "1"
+      budget:
+        description: "minutes the walk may run"
+        required: false
+        default: "60"
+      pace:
+        description: "seconds between requests"
+        required: false
+        default: "1"
+      cooldown:
+        description: "minutes to wait after 8 calls in a row failed the same way (default 30)"
+        required: false
+        default: ""
+      full:
+        description: "true reads every listing page and fetches every advisory again"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: walk
+  cancel-in-progress: false
+
+jobs:
+  walk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: refuse without the source secret
+        env:
+          BASE: ${{ secrets.SOURCE_BASE }}
+        run: |
+          if [ -z "$BASE" ]; then echo "::error::repository secret SOURCE_BASE is not set"; exit 1; fi
+      - name: walk
+        id: walk
+        env:
+          BASE: ${{ secrets.SOURCE_BASE }}
+          BUDGET: ${{ inputs.budget || '60' }}
+          PACE: ${{ inputs.pace || '1' }}
+          COOLDOWN: ${{ inputs.cooldown }}
+          FULL: ${{ inputs.full }}
+          CHAIN: ${{ inputs.chain || '1' }}
+          RELEASE_TAG: data
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x bin/source-walk
+          sha256sum bin/source-walk
+          bin/source-walk
+          more=$(sed -n 's/^more=//p' "$GITHUB_OUTPUT" | tail -n 1)
+          if [ "$more" != true ] || [ "$CHAIN" -le 0 ]; then
+            echo "chain: no follow-up run requested (more=${more:-unset}, chain=$CHAIN)"
+          fi
+      - name: chain
+        if: ${{ success() && steps.walk.outputs.more == 'true' && fromJSON(inputs.chain || '1') > 0 }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHAIN: ${{ inputs.chain || '1' }}
+          BUDGET: ${{ inputs.budget || '60' }}
+          PACE: ${{ inputs.pace || '1' }}
+          COOLDOWN: ${{ inputs.cooldown }}
+          FULL: ${{ inputs.full }}
+        run: |
+          left=$((CHAIN - 1))
+          gh workflow run source-walk.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+            -f chain="$left" -f budget="$BUDGET" -f pace="$PACE" -f cooldown="$COOLDOWN" -f full="$FULL"
+          echo "chain: follow-up run requested; $left more may follow it"
