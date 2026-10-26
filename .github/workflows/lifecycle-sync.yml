@@ -1,0 +1,53 @@
+name: lifecycle sync
+
+# Copies the source's two lifecycle pages into a second rolling release
+# (tag `lifecycle`), apart from the advisories' `data` release: each page
+# gzipped whole as served (hardware.html.gz, software.html.gz), indexed by
+# state.json (per unit: complete, sha256, size, table count, the origin's
+# Last-Modified and ETag, copy time). A conditional GET with the validators
+# of the copy held makes an unchanged page cost one request. A page the
+# source does not answer for, or that shrank below 90% of the copy held or
+# lost tables, keeps its previous file with the reason noted. Once a day.
+#
+# Set the repository secret LIFECYCLE_BASE to the directory URL the pages live
+# under, with its trailing slash (Settings → Secrets and variables → Actions →
+# Secrets); it is masked in every log.
+on:
+  schedule:
+    - cron: "50 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "true fetches every page whole even when the origin says it has not changed"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lifecycle
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: refuse without the source secret
+        env:
+          BASE: ${{ secrets.LIFECYCLE_BASE }}
+        run: |
+          if [ -z "$BASE" ]; then echo "::error::repository secret LIFECYCLE_BASE is not set"; exit 1; fi
+      - name: sync
+        env:
+          BASE: ${{ secrets.LIFECYCLE_BASE }}
+          FORCE: ${{ inputs.force }}
+          RELEASE_TAG: lifecycle
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x bin/lifecycle-sync
+          sha256sum bin/lifecycle-sync
+          bin/lifecycle-sync
